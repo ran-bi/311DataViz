@@ -1,0 +1,247 @@
+---
+title: "Exploratory Visualizations:\nChicago 311 Graffiti Removal Request Data"
+author: "Ran Bi"
+date: "Oct 15th, 2017"
+output:
+  html_document: default
+  pdf_document: default
+urlcolor: blue
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(snakecase)
+library(lubridate)
+library(scales)
+library(ggmap)
+library(ggthemes)
+library(rmarkdown)
+```
+
+## Background
+The battle against graffiti is never-ending in Chicago. The Department of Streets and Sanitation provides free service for private property owners to remove graffiti. Those requests are normally received from 311 calls and the records are open to the public via Chicago Data Portal. This exploratory visualization project aims to analyze trends and patterns of graffiti removal requests from 2011 to the present.
+
+
+```{r data preprocess, include=FALSE, message=FALSE, warning = FALSE}
+#Read in data
+requests <- read_csv("Data/311_Service_Requests_-_Graffiti_Removal.csv")
+
+#Change camel to snake cases
+names(requests) <- to_any_case(names(requests) , case = "snake", postprocess = "_")
+
+#Change date into correct format
+requests$creation_date <- mdy(requests$creation_date)
+requests$completion_date <- mdy(requests$completion_date)
+
+#Dedup 
+requests <- requests %>% 
+  filter(status %in% c("Open", "Completed"),
+         community_area %in% c(seq(1,77,1))) %>%
+  mutate(year = year(creation_date),
+         month = month(creation_date),
+         day = day(creation_date),
+         weekday = wday(creation_date, label = TRUE),
+         yearmonth = format(as.Date(creation_date), "%Y-%m"),
+         yearquarter = paste0(year,"/Q",quarter(creation_date)),
+         response_time = as.numeric(completion_date - creation_date)) %>%
+  filter(year>2010 & year<2018)
+```
+
+## Graphs
+### 1. Geographical distribution of the graffiti removal requests
+
+The most graffiti removal requests since 2011 concentrate along the Blue Line between Damen and Logan Square, the Pink Line in Little Village area, and the Orange Line between Ashland and Midway Airport. Graffiti is a sign used among gangs to exchange information and terrify the neighborhood, therefore locations adjacent to transportation lines are heavily affected by vandalism activities. According to the broken window theory, graffiti sends the signal that the area is not monitored and that criminal behavior has little risk of detection. Therefore locations with graffiti are more likely to spur graffiti in the surrounding area.
+
+```{r map, echo=FALSE, message=FALSE, warning = FALSE}
+chicago <- get_map(location = 'chicago', zoom = 11)
+freq <- requests %>% 
+  group_by(longitude,latitude) %>%
+  summarise(count=n()) %>%
+  filter(count>30, !is.na(longitude)) 
+
+ggmap(chicago) + 
+  geom_point(data = freq, aes(x = longitude, 
+                              y = latitude, 
+                              alpha = count), 
+             color="red", size=2) +
+  guides(alpha=guide_legend(title="Total Request\nSince 2011")) +
+  labs(title = "Graffiti Concentrate along MTA Lines", 
+       subtitle = "More preventive actions should be taken along blue, pink & orange lines",
+       caption = "Data from Chicago Data Portal") +
+  theme(plot.title = element_text(size=18, face = "bold"),
+        plot.subtitle = element_text(size=14),
+        plot.caption = element_text(size = 12, hjust=1),
+        legend.title = element_text(size = 12),
+        axis.title = element_blank(), 
+        axis.text = element_blank(),
+        axis.ticks = element_blank())
+```
+
+### 2. Time distribution of the graffiti removal requests
+
+The heat map shows the monthly graffiti removal requests volume as a percentage of the total requests of the year. No strong pattern is identified in the time distribution of graffiti requests throughout the year, but March and August see more frequent vandalism activities relatively. The pattern is possibly related to school holidays, i.e. spring break and summer vacations, and warmer weather.
+
+```{r heatmap, echo=FALSE, message=FALSE, warning = FALSE}
+#Calculate annual total
+year_total <- requests %>%
+  filter(year<2017) %>%
+  group_by(year) %>%
+  summarise(year_count=n())
+
+requests %>% 
+  filter(year < 2017) %>%
+  group_by(year, month) %>% 
+  summarise(month_count = n()) %>%
+  left_join(year_total) %>%
+  mutate(month_perc=month_count/year_count) %>%
+  ggplot(aes(x=month, y=year, fill=month_perc)) + 
+  geom_tile(color = "white") +
+  scale_fill_gradient(low = "white", high = "steelblue", 
+                      labels = scales::percent) +
+  scale_y_continuous(breaks = c(seq(2011, 2016, 1))) +
+  scale_x_continuous(breaks = c(3,8), 
+                     labels = c("Mar","Aug")) +
+  labs(x = "Month", y = "Year", 
+       fill = "Monthly requests as a\npercentage of annual total",
+       title = "More Graffiti Removal Requests in Mar & Aug", 
+       subtitle = "Graffiti activities may relate to school holidays",
+       caption = "Data from Chicago Data Portal") +
+  coord_fixed(ratio=1) +
+  theme(plot.background = element_blank(),
+               panel.grid.minor = element_blank(),
+               panel.grid.major = element_blank(),
+               panel.background = element_blank(),
+               panel.border = element_blank(),
+               axis.line = element_blank(),
+               axis.ticks = element_blank(),
+               plot.title = element_text(size=18, face="bold"),
+               plot.subtitle = element_text(size=14),
+               plot.caption = element_text(size=12),
+               axis.text = element_text(size=12),
+               axis.title.y=element_text(size=12, angle = 0, 
+                                         face = "bold.italic"),
+               axis.title.x=element_text(size=12, angle = 0, 
+                                         face = "bold.italic", 
+                                         hjust = 0.95),
+               legend.title=element_text(size=12, vjust = 0.5),
+               legend.position="bottom")
+```
+
+## 3. Graffiti removal speeds up in the past six years
+
+The Graffiti Removal Program employs "blast" trucks and dedicated crews to remove painted graffiti. Quarterly average removal time decreased sharply in 2014, thanks to more than 1 million extra funding invested to blasting crews and two chemical graffiti-removal trucks. As the City continues to increase investment in advanced blast trucks, more than half to the requests are completed within one day in recent three years.
+
+```{r responsetime, echo=FALSE, message=FALSE, warning = FALSE}
+requests %>% 
+  group_by(yearquarter) %>% 
+  summarise(average_response = (mean(response_time)),
+            median_response = (median(response_time))) %>%
+  ggplot(aes(x=yearquarter)) +
+  geom_col(aes(y=average_response), fill = "steel blue") +
+  geom_point(aes(y=median_response), color = "grey", size=3) +
+  scale_x_discrete(breaks=c("2011/Q1","2012/Q1","2013/Q1",
+                            "2014/Q1","2015/Q1", "2016/Q1","2017/Q1"))+
+  scale_y_continuous(breaks = c(seq(0,10,2))) +
+  geom_vline(xintercept = 13.5,  linetype="dashed", color = "red", size=0.5) +
+  annotate("text", x = 18, y = 6, label = "->Increased investment") +
+  labs(x = "Year/Quarter", y = "Average Responding Time (Days)", 
+       title = "Average Responding Time Decreased Sharply in 2014", 
+       subtitle = "More than half requests are completed within one day in recent 3 years",
+       caption = "Grey point shows the median responding time of the quarter\nData from Chicago Data Portal") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size=18, face = "bold"),
+        plot.subtitle = element_text(size=14),
+        plot.caption = element_text(size=12),
+        axis.ticks = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())
+
+```
+
+### 4. Correlation with demographic and economic indicators
+
+Hispanic neighborhoods present a significantly higher volume of graffiti removal requests. According to the study at [DSSG](https://github.com/dssg/411-on-311), it is largely due to two factors. First, gang activities are more prevalent in Hispanic neighborhoods. Gang groups use graffiti to tag their territory. Second, Hispanic communities tend to protect the interest of their neighborhood, and therefore more proactively request for clean up.
+
+```{r dotplot, echo=FALSE, message=FALSE, warning = FALSE}
+#Read in community data and preprocess
+community <- read_csv("data/chicago-community-areas.csv")
+names(community) <- to_any_case(names(community) , case = "snake", postprocess = "_")
+community$majority <- ifelse(
+  community$latinos > 0.5, "Hispanic", "Non-Hispanic")
+
+#Calculate requests per population 
+requests_by_community <- requests %>% 
+  filter(year == 2016) %>%
+  group_by(community_area) %>% 
+  summarise(by_community_count = n()) %>% 
+  left_join(community) %>% 
+  mutate(requests_per_10000 = 10000 * by_community_count / population)
+
+requests_by_community %>%
+  ggplot(aes(x = income, y = requests_per_10000)) +
+  geom_point(aes(color=majority, size = population),alpha = 1) +
+  scale_color_manual(values=c("#4682B4","#D3D3D3")) +
+  scale_x_continuous(breaks = seq(15000, 90000, by = 15000), labels = comma) +
+  scale_y_continuous(breaks = seq(0, 2500, by = 500), 
+                     limits = c(0,2500), labels = comma) +
+  labs(x = "Median Income ($)", y = "Requests Volume per 10,000 Population", 
+       color = "Majority Race",
+       size = "Population",
+       title = "Graffiti Removal Requests Volume by Community in 2016", 
+       subtitle = "Hispanic neighborhoods present a remarkably higher volume",
+       caption = "Data from Chicago Data Portal and American Community Survey") +
+       theme_minimal() +
+       theme(plot.title = element_text(size=18, face = "bold",hjust=0.3),
+        plot.subtitle = element_text(size=14, hjust=0.3),
+        plot.caption = element_text(hjust=0.5, size = 12),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank()) 
+
+```
+
+### 5. A closer look at Hispanic communities
+
+The line graphs show annual request amount of each Hispanic community, ordered by total request volume in the six years of study. Requests from South Lawndale dropped significantly in 2015. However, graffiti remains a persistent problem to most of Hispanic communities. It is recommended to carry out more educational programs and gang activity prevention programs to deter graffiti in Hispanic communities.
+```{r linechart, echo=FALSE, message=FALSE, warning = FALSE}
+requests_by_community_year <- requests %>% 
+  filter(year < 2017) %>%
+  group_by(year, community_area) %>% 
+  summarise(by_community_year_count = n()) %>%
+  left_join(community) %>%
+  filter(majority == "Hispanic") 
+
+#Assign orders to communities by total volume
+requests_by_community_total <- requests_by_community_year %>%
+  group_by(name) %>% 
+  summarise(all_year_total = sum(by_community_year_count)) %>% 
+  arrange(desc(all_year_total))
+order <- requests_by_community_total[["name"]]
+requests_by_community_year$name = factor(requests_by_community_year$name, levels=order, ordered=TRUE)
+
+ggplot(data = requests_by_community_year,
+       mapping = aes(x = year, y = by_community_year_count)) + 
+  geom_line(alpha=0.5) + 
+  geom_point(color = "steel blue") +
+  facet_wrap(~ name, nrow = 4) +
+  scale_x_continuous(breaks = c(2011, 2013, 2015)) +
+  scale_y_continuous(breaks = c(seq(0, 10000, 5000)), labels = comma) +
+  labs(x = "Year", y = "Number of Requests", 
+       title = "Graffiti Issue Persists in Most Hispanic Communities", 
+       subtitle = "Requests from South Lawndale dropped significantly in 2015",
+       caption = "Neighborhoods ranked by total number of requests 2011 to 2016\nData from Chicago Data Portal and American Community Survey") +
+  theme_linedraw() +
+  theme(plot.title = element_text(size=18, face = "bold"),
+        plot.subtitle = element_text(size=14),
+        plot.caption = element_text(size=12, hjust=1),
+        axis.ticks = element_blank(),
+        panel.grid.major.x = element_blank(),
+        panel.grid.minor.x = element_blank(),
+        panel.grid.minor.y = element_blank())
+```
+
+
+## Data Source
+* Chicago data portal - 311 Service Requests - [Graffiti Removal](https://data.cityofchicago.org/Service-Requests/311-Service-Requests-Graffiti- Removal/hec5-y4x5/data)
+* 2010 Census data
